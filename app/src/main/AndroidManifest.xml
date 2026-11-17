@@ -3,9 +3,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application android:label="RelayView" android:icon="@drawable/ic_relay"
         android:allowBackup="false" android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
+        <service android:name=".MonitorService" android:exported="false"
+            android:foregroundServiceType="connectedDevice" android:stopWithTask="false"/>
         <activity android:name=".ViewerActivity" android:exported="false"
             android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
             <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>

@@ -2,10 +2,20 @@ package app.relayview;
 
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.ContextCompat;
+import android.Manifest;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.Build;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.*;
 import android.widget.*;
@@ -29,9 +39,21 @@ public final class MainActivity extends ComponentActivity {
     private boolean visible;
     private int generation;
     private Future<?> task;
+    private Button monitorButton;
+    private TextView monitorStatus;
+    private ActivityResultLauncher<String> notificationPermission;
+    private final BroadcastReceiver monitorReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) { refreshMonitor(); }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        MonitorService.channels(this);
+        notificationPermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
+            if (screen != Screen.GRID || recorder == null) return;
+            if (granted && MonitorService.alertsEnabled(this)) startMonitor();
+            else notificationSettings();
+        });
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() { goBack(); }
         });
@@ -43,6 +65,8 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void layout(Screen next) {
+        monitorButton = null;
+        monitorStatus = null;
         generation++;
         if (task!=null) task.cancel(true);
         for (CameraTile t:tiles) t.active(false);
@@ -183,13 +207,20 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void save(Recorder saved) {
-        try { vault.save(saved); recorder=saved; grid(0); }
+        try { vault.save(saved); stopService(new Intent(this, MonitorService.class)); recorder=saved; grid(0); }
         catch(Exception failure) { toast("Android could not save this pairing securely. Try again."); }
     }
 
     private void grid(int scrollY) {
         layout(Screen.GRID);
         heading("Cameras",recorder.model+"   ·   "+recorder.channels.size()+" channels");
+        monitorButton = Ui.button(this, "Start monitoring", false, v -> toggleMonitor());
+        monitorStatus = Ui.text(this, "", 14, Ui.MUTED, false);
+        body.addView(monitorButton, -1, -2);
+        Ui.space(body, 6);
+        body.addView(monitorStatus);
+        Ui.space(body, 16);
+        refreshMonitor();
         int columns=getResources().getConfiguration().screenWidthDp>=640 ? 3 : 2;
         int width=getResources().getDisplayMetrics().widthPixels-dp(40+10*(columns-1));
         int height=Math.max(dp(80),width/columns*9/16);
@@ -226,13 +257,45 @@ public final class MainActivity extends ComponentActivity {
         for (CameraTile t:tiles) t.active(visible && t.getLocalVisibleRect(area) && area.height()>0);
     }
 
+    private void refreshMonitor() {
+        if (monitorButton == null) return;
+        monitorButton.setText(MonitorService.running ? "Stop monitoring" : "Start monitoring");
+        String detail = MonitorService.detail;
+        monitorStatus.setText(detail.isEmpty() ? "Get alerts for people and vehicles, even with the screen off." : detail);
+    }
+
+    private void toggleMonitor() {
+        if (MonitorService.running) {
+            stopService(new Intent(this, MonitorService.class));
+        } else if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS);
+        } else if (!MonitorService.alertsEnabled(this)) {
+            notificationSettings();
+        } else {
+            startMonitor();
+        }
+    }
+
+    private void startMonitor() {
+        startForegroundService(new Intent(this, MonitorService.class).setAction(MonitorService.START));
+    }
+
+    private void notificationSettings() {
+        new AlertDialog.Builder(this).setTitle("Enable camera alerts")
+                .setMessage("Allow RelayView notifications and enable Camera detections to start monitoring.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Settings", (d, w) -> startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()))).show();
+    }
+
     private void recorderMenu() {
         new AlertDialog.Builder(this).setTitle(recorder.model).setMessage(recorder.host)
                 .setPositiveButton("Done",null).setNeutralButton("Change", (d,w) -> discover(true))
                 .setNegativeButton("Forget", (d,w) -> new AlertDialog.Builder(this)
                         .setTitle("Forget this recorder?").setMessage("Remove its saved login from this phone.")
                         .setNegativeButton("Cancel",null).setPositiveButton("Forget",(dd,ww) -> {
-                            try {vault.forget();recorder=null;discover(true);}
+                            try {vault.forget();stopService(new Intent(this, MonitorService.class));recorder=null;discover(true);}
                             catch(Exception error) { toast("Could not remove saved pairing."); }
                         }).show()).show();
     }
@@ -243,7 +306,13 @@ public final class MainActivity extends ComponentActivity {
         else if(screen==Screen.DISCOVER && recorder!=null) grid(0);
         else finish();
     }
-    @Override protected void onStart() {super.onStart();visible=true;if(scroll!=null) scroll.post(this::syncTiles);}
+    @Override protected void onStart() {
+        super.onStart();
+        ContextCompat.registerReceiver(this, monitorReceiver, new IntentFilter(MonitorService.CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED);
+        refreshMonitor();
+        visible=true;if(scroll!=null) scroll.post(this::syncTiles);
+    }
+    @Override protected void onStop() { unregisterReceiver(monitorReceiver); super.onStop(); }
     @Override protected void onPause() {visible=false;syncTiles();super.onPause();}
     @Override protected void onResume() {super.onResume();visible=true;if(scroll!=null) scroll.post(this::syncTiles);}
     @Override protected void onSaveInstanceState(Bundle state) {
